@@ -23,11 +23,11 @@ metadata {
 		capability "Health Check"
 		capability "Configuration"
 
-		fingerprint inClusters: "0x62"
-		fingerprint mfr: "010E", prod: "0009", model: "0001", deviceJoinName: "Danalock V3 Smart Lock"
-		fingerprint mfr: "0090", prod: "0003", model: "0446", deviceJoinName: "Kwikset Convert Deadbolt Door Lock" //99140
-		fingerprint mfr: "033F", prod: "0001", model: "0001", deviceJoinName: "August Smart Lock Pro"
-		fingerprint mfr: "021D", prod: "0003", model: "0001", deviceJoinName: "Alfred Smart Home Touchscreen Deadbolt" // DB2
+		fingerprint inClusters: "0x62", deviceJoinName: "Door Lock"
+		fingerprint mfr: "010E", prod: "0009", model: "0001", deviceJoinName: "Danalock Door Lock" //Danalock V3 Smart Lock
+		fingerprint mfr: "0090", prod: "0003", model: "0446", deviceJoinName: "Kwikset Door Lock" //99140 //Kwikset Convert Deadbolt Door Lock
+		fingerprint mfr: "033F", prod: "0001", model: "0001", deviceJoinName: "August Door Lock" //August Smart Lock Pro
+		fingerprint mfr: "021D", prod: "0003", model: "0001", deviceJoinName: "Alfred Door Lock" // DB2 //Alfred Smart Home Touchscreen Deadbolt
 	}
 
 	simulator {
@@ -95,7 +95,7 @@ def installed() {
  * and check again.
  */
 def scheduleInstalledCheck() {
-	runIn(120, installedCheck, [forceForLocallyExecuting: true])
+	runIn(120, "installedCheck", [forceForLocallyExecuting: true])
 }
 
 def installedCheck() {
@@ -405,6 +405,12 @@ private def handleBatteryAlarmReport(cmd) {
 	def deviceName = device.displayName
 	def map = null
 	switch (cmd.zwaveAlarmEvent) {
+		case 0x01: //power has been applied, check if the battery level updated
+			log.debug "Batteries replaced. Queueing a battery get."
+			runIn(10, "queryBattery", [overwrite: true, forceForLocallyExecuting: true])
+			state.batteryQueries = 0
+			result << response(secure(zwave.batteryV1.batteryGet()))
+			break;
 		case 0x0A:
 			map = [name: "battery", value: 1, descriptionText: "Battery level critical", displayed: true, data: [lockName: deviceName]]
 			break
@@ -432,7 +438,6 @@ private def handleAlarmReportUsingAlarmType(cmd) {
 	def result = []
 	def map = null
 	def deviceName = device.displayName
-	lockCodes = loadLockCodes()
 	switch(cmd.alarmType) {
 		case 9:
 		case 17:
@@ -535,6 +540,7 @@ def zwaveEvent(physicalgraph.zwave.commands.batteryv1.BatteryReport cmd) {
 		map.value = cmd.batteryLevel
 	}
 	state.lastbatt = now()
+	unschedule("queryBattery")
 	if (cmd.batteryLevel == 0 && device.latestValue("battery") > 20) {
 		// Danalock reports 00 when batteries are changed. We do not know what is the real level at this point.
 		// We will ignore this level to mimic normal operation of the device (battery level is refreshed only when motor is operating)
@@ -607,7 +613,7 @@ def unlockWithTimeout() {
  */
 def ping() {
 	log.trace "[DTH] Executing ping() for device ${device.displayName}"
-	runIn(30, followupStateCheck)
+	runIn(30, "followupStateCheck")
 	if (zwaveInfo.mfr == "010E") {
 		secure(zwave.doorLockV1.doorLockOperationGet())
 	} else {
@@ -684,5 +690,16 @@ private Boolean secondsPast(timestamp, seconds) {
 		}
 	}
 	return (now() - timestamp) > (seconds * 1000)
+}
+
+private queryBattery() {
+	log.debug "Running queryBattery"
+	if (state.batteryQueries == null) state.batteryQueries = 0
+	if ((!state.lastbatt || now() - state.lastbatt > 10*1000) && state.batteryQueries < 5) {
+		log.debug "It's been more than 10s since battery was updated after a replacement. Querying battery."
+		runIn(10, "queryBattery", [overwrite: true, forceForLocallyExecuting: true])
+		state.batteryQueries = state.batteryQueries + 1
+		sendHubCommand(secure(zwave.batteryV1.batteryGet()))
+	}
 }
 
